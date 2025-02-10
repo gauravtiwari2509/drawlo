@@ -102,9 +102,42 @@ app.post("/signin", async (req: Request, res: Response): Promise<any> => {
     });
   }
 });
-app.post("/room", verifyJWT, (req, res) => {
-  console.log("jwt verified successfully and you are here");
-  res.json({ message: "You are in the room" });
+app.post("/room", verifyJWT, async (req, res): Promise<any> => {
+  const { slug } = req.body;
+  if (!slug) {
+    return res.status(400).json({
+      message: "Please provide a slug",
+    });
+  }
+  //@ts-ignore
+  const user = req.user;
+
+  try {
+    const room = await prismaClient.room.create({
+      data: {
+        slug,
+        //@ts-ignore
+        adminId: user.userId,
+      },
+    });
+
+    return res.status(200).json({
+      message: "Room created successfully",
+      room,
+    });
+  } catch (error: any) {
+    console.error(error);
+
+    if (error.code === "P2002") {
+      return res.status(400).json({
+        message: "enter unique room name",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
 });
 
 const PORT = process.env.PORT || 8000;

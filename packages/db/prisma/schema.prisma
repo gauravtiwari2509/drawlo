@@ -19,11 +19,13 @@ model User {
 
 model Room {
   id        Int      @id @default(autoincrement())
-  slug      String   @unique
+  slug      String
   createdAt DateTime @default(now())
   adminId   String
   chats     Chat[]
   admin     User     @relation(fields: [adminId], references: [id])
+
+  @@unique([slug, adminId])
 }
 
 model Chat {

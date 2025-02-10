@@ -2,6 +2,14 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 import "dotenv/config";
 import { NextFunction, Request, Response } from "express";
 
+declare global {
+  namespace Express {
+    interface Request {
+      user?: JwtPayload;
+    }
+  }
+}
+
 const verifyJWT = async (
   req: Request,
   res: Response,
@@ -12,29 +20,34 @@ const verifyJWT = async (
     if (!ACCESS_TOKEN_SECRET) {
       throw new Error("ACCESS_TOKEN_SECRET is not defined");
     }
+
     const token: string | undefined =
       req.cookies?.accessToken ||
       req.header("Authorization")?.replace("Bearer ", "");
+
     if (!token) {
       return res.status(401).json({
-        message: "no token provided",
+        message: "No token provided",
       });
     }
-    const decodedToken = jwt.verify(token, ACCESS_TOKEN_SECRET);
-    //correct type of user
-    //write user finding logic
-    if (!(decodedToken as JwtPayload).userId) {
+
+    const decodedToken = jwt.verify(token, ACCESS_TOKEN_SECRET) as JwtPayload;
+
+    if (!decodedToken.userId) {
       return res.status(401).json({
-        message: "invalid token userId not found",
+        message: "Invalid token, userId not found",
       });
     }
-    const user = "temp"; //do db call
-    if (!user) {
-      return res.status(401).json({ message: "user not found" });
-    }
-    //@ts-ignore
-    req.user = user;
+
+    req.user = decodedToken; 
+
     next();
-  } catch (error) {}
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
 };
+
 export { verifyJWT };
