@@ -1,8 +1,37 @@
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import dotenv from "dotenv";
-dotenv.config({ path: "./.env" });
-const wss = new WebSocketServer({ port: 8080 });
 import jwt, { JwtPayload } from "jsonwebtoken";
+import { connectToRabbitMQ, getChannel } from "./rabbitMQ";
+import { startRabbitMQConsumer } from "./rabbitMQConsumer";
+import { prismaClient } from "@repo/db/client";
+
+const wss = new WebSocketServer({ port: 8080 });
+
+dotenv.config({ path: "./.env" });
+
+interface User {
+  userId: string;
+  ws: WebSocket;
+  rooms: number[];
+}
+
+const Users: User[] = [];
+
+async function initializeRabbitMQ() {
+  try {
+    await connectToRabbitMQ();
+    console.log("Connected to RabbitMQ.");
+  } catch (error) {
+    console.error("Error initializing RabbitMQ:", error);
+    process.exit(1);
+  }
+}
+
+async function initializeServer() {
+  await initializeRabbitMQ();
+  startRabbitMQConsumer();
+}
+initializeServer();
 
 wss.on("connection", (ws, request) => {
   const url = request.url;
@@ -12,6 +41,7 @@ wss.on("connection", (ws, request) => {
     ws.close();
     return;
   }
+
   const queryParamsString = url.split("?")[1];
 
   if (!queryParamsString) {
@@ -20,24 +50,131 @@ wss.on("connection", (ws, request) => {
     return;
   }
 
-  const queryPrams = new URLSearchParams(url.split("?")[1]);
+  const queryPrams = new URLSearchParams(queryParamsString);
   const token = queryPrams.get("token");
   if (!token) {
     ws.send("Error: No token provided.");
     ws.close();
     return;
   }
+
   const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET;
   if (!ACCESS_TOKEN_SECRET) {
-    throw new Error("access token is not definied");
-  }
-  const decodedToken = jwt.verify(token, ACCESS_TOKEN_SECRET);
-  if (!(decodedToken as JwtPayload).userId) {
+    ws.send("Error: Access token secret is not defined.");
     ws.close();
     return;
   }
 
-  ws.on("message", (data) => {
-    ws.send("pong");
-  });
+  let decodedToken: JwtPayload | string;
+  try {
+    decodedToken = jwt.verify(token, ACCESS_TOKEN_SECRET);
+  } catch (err) {
+    ws.send("Error: Invalid token.");
+    console.error("Token verification failed:", err);
+    ws.close();
+    return;
+  }
+
+  const userId = (decodedToken as JwtPayload).userId;
+  if (!userId) {
+    ws.send("Error: Invalid token.");
+    ws.close();
+    return;
+  }
+
+  prismaClient.user
+    .findUnique({ where: { id: userId } })
+    .then((user) => {
+      if (!user) {
+        ws.send("Error: User does not exist.");
+        ws.close();
+        return;
+      }
+
+      const existingUser = Users.find((user) => user.userId === userId);
+      if (existingUser) {
+        existingUser.ws = ws;
+      } else {
+        const newUser: User = { userId, ws, rooms: [] };
+        Users.push(newUser);
+      }
+
+      ws.on("message", async (data: string) => {
+        try {
+          const parsedData = JSON.parse(data);
+          const type = parsedData.type;
+          const roomId = parseInt(parsedData.roomId);
+          if (!roomId) {
+            ws.send("Error: No roomId provided.");
+            return;
+          }
+
+          const user = Users.find((user) => user.userId === userId);
+          if (!user) {
+            ws.send("Error: User not found.");
+            ws.close();
+            return;
+          }
+
+          // Check if room exists in the database
+          const roomExists = await prismaClient.room.findUnique({
+            where: { id: roomId },
+          });
+          if (!roomExists) {
+            ws.send(`Error: Room ${roomId} does not exist.`);
+            return;
+          }
+
+          // Handle JOIN/LEAVE logic
+          if (type === "JOIN") {
+            if (!user.rooms.includes(roomId)) {
+              user.rooms.push(roomId);
+              ws.send(`Joined room: ${roomId}`);
+            } else {
+              ws.send(`Already in room: ${roomId}`);
+            }
+          } else if (type === "LEAVE") {
+            user.rooms = user.rooms.filter((room) => room !== roomId);
+            ws.send(`Left room: ${roomId}`);
+          } else if (type === "CHAT") {
+            const messageData = {
+              roomId,
+              userId,
+              message: parsedData.message,
+            };
+
+            const channel = getChannel();
+            channel.sendToQueue(
+              "chat_queue",
+              Buffer.from(JSON.stringify(messageData)),
+              { persistent: true }
+            );
+            const usersInRoom = Users.filter((user) =>
+              user.rooms.includes(roomId)
+            );
+            usersInRoom.forEach((user) => {
+              user.ws.send(
+                JSON.stringify({ roomId, message: parsedData.message })
+              );
+            });
+          }
+        } catch (err) {
+          ws.send("Error: Invalid message format.");
+          console.error("Error parsing message:", err);
+        }
+      });
+
+      ws.on("close", () => {
+        const index = Users.findIndex((user) => user.userId === userId);
+        if (index !== -1) {
+          Users.splice(index, 1);
+          // console.log(`User ${userId} disconnected`);
+        }
+      });
+    })
+    .catch((err) => {
+      console.error("Error checking user in the database:", err);
+      ws.send("Error: Internal server error.");
+      ws.close();
+    });
 });

@@ -15,8 +15,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@repo/db": "workspace:*",
+    "@types/amqplib": "^0.10.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/ws": "^8.5.13",
+    "amqplib": "^0.10.5",
     "dotenv": "^16.4.7",
     "jsonwebtoken": "^9.0.2",
     "ws": "^8.18.0"
