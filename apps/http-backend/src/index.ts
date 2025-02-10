@@ -1,9 +1,10 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { verifyJWT } from "./middleware/auth.middleware";
-// import { primsaClient } from "@repo/db/client";
-
+import { prismaClient } from "@repo/db/client";
+import bcrypt from "bcrypt";
+import { generateAccessToken } from "./utils/jwt.util";
 const app = express();
 
 dotenv.config({
@@ -23,9 +24,88 @@ app.get("/", (_, res) => {
   res.send("hi there welcome to http server");
 });
 
-app.post("/signup", (req, res) => {});
-app.post("/signin", (req, res) => {});
-app.post("/room", verifyJWT, (req, res) => {});
+app.post("/signup", async (req: Request, res: Response): Promise<any> => {
+  const { username, password, email } = req.body;
+
+  if (!username || !password || !email) {
+    return res.status(400).json({
+      message: "Please provide all the fields",
+    });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await prismaClient.user.create({
+      data: {
+        username,
+        email,
+        password: hashedPassword,
+      },
+    });
+    if (user) {
+      return res.status(200).json({
+        message: "User created successfully",
+      });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+});
+
+app.post("/signin", async (req: Request, res: Response): Promise<any> => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({
+      message: "Please provide all the fields",
+    });
+  }
+  try {
+    const user = await prismaClient.user.findUnique({
+      // @ts-ignore
+      where: {
+        username,
+      },
+    });
+    console.log(user);
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      return res.status(400).json({
+        message: "Invalid password",
+      });
+    }
+    const token = generateAccessToken({
+      _id: user.id,
+      username: user.username,
+    });
+
+    return res
+      .cookie("token", token, {
+        httpOnly: true,
+      })
+      .status(200)
+      .json({
+        message: "User signed in successfully",
+      });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+});
+app.post("/room", verifyJWT, (req, res) => {
+  console.log("jwt verified successfully and you are here");
+  res.json({ message: "You are in the room" });
+});
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
