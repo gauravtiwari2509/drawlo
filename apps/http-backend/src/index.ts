@@ -140,6 +140,61 @@ app.post("/room", verifyJWT, async (req, res): Promise<any> => {
   }
 });
 
+app.get("/rooms", verifyJWT, async (req, res): Promise<any> => {
+  try {
+    //@ts-ignore
+    const userId = req.user.userId;
+    const rooms = await prismaClient.room.findMany({
+      where: {
+        adminId: userId,
+      },
+    });
+    return res.status(200).json({
+      rooms,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+});
+
+// I am not happy with this logic change it later it's bad
+app.get("/rooms/:roomID", verifyJWT, async (req, res): Promise<any> => {
+  const { roomId } = req.params;
+  if (!roomId) {
+    return res.status(400).json({
+      message: "Please provide a roomId",
+    });
+  }
+  try {
+    //@ts-ignore
+    const userId = req.user.userId;
+    //something need to be done here
+    const room: any = await prismaClient.room.findUnique({
+      where: {
+        id: roomId,
+      },
+    });
+    if (!room.id) {
+      return res.status(400).json({ message: "no such room exist" });
+    }
+    const chats = await prismaClient.chat.findMany({
+      where: {
+        roomId,
+      },
+    });
+    return res
+      .status(200)
+      .json({ message: "chat fetched successfully", chats });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+});
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log("Server is running on port 8000");

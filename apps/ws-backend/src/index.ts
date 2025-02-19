@@ -14,7 +14,7 @@ interface User {
   ws: WebSocket;
   rooms: number[];
 }
-
+//later use some state management library
 const Users: User[] = [];
 
 async function initializeRabbitMQ() {
@@ -32,7 +32,6 @@ async function initializeServer() {
   startRabbitMQConsumer();
 }
 initializeServer();
-
 wss.on("connection", (ws, request) => {
   const url = request.url;
 
@@ -82,99 +81,77 @@ wss.on("connection", (ws, request) => {
     return;
   }
 
-  prismaClient.user
-    .findUnique({ where: { id: userId } })
-    .then((user) => {
+  const existingUser = Users.find((user) => user.userId === userId);
+  if (existingUser) {
+    existingUser.ws = ws;
+  } else {
+    const newUser: User = { userId, ws, rooms: [] };
+    Users.push(newUser);
+  }
+
+  ws.on("message", async (data: string) => {
+    try {
+      const parsedData = JSON.parse(data);
+      const { type, roomId } = parsedData;
+      if (!roomId) {
+        ws.send("Error: No roomId provided.");
+        return;
+      }
+
+      const user = Users.find((user) => user.userId === userId);
       if (!user) {
-        ws.send("Error: User does not exist.");
+        ws.send("Error: User not found.");
         ws.close();
         return;
       }
 
-      const existingUser = Users.find((user) => user.userId === userId);
-      if (existingUser) {
-        existingUser.ws = ws;
-      } else {
-        const newUser: User = { userId, ws, rooms: [] };
-        Users.push(newUser);
+      const roomExists = await prismaClient.room.findUnique({
+        where: { id: roomId },
+      });
+      if (!roomExists) {
+        ws.send(`Error: Room ${roomId} does not exist.`);
+        return;
       }
 
-      ws.on("message", async (data: string) => {
-        try {
-          const parsedData = JSON.parse(data);
-          const type = parsedData.type;
-          const roomId = parseInt(parsedData.roomId);
-          if (!roomId) {
-            ws.send("Error: No roomId provided.");
-            return;
-          }
-
-          const user = Users.find((user) => user.userId === userId);
-          if (!user) {
-            ws.send("Error: User not found.");
-            ws.close();
-            return;
-          }
-
-          // Check if room exists in the database
-          const roomExists = await prismaClient.room.findUnique({
-            where: { id: roomId },
-          });
-          if (!roomExists) {
-            ws.send(`Error: Room ${roomId} does not exist.`);
-            return;
-          }
-
-          // Handle JOIN/LEAVE logic
-          if (type === "JOIN") {
-            if (!user.rooms.includes(roomId)) {
-              user.rooms.push(roomId);
-              ws.send(`Joined room: ${roomId}`);
-            } else {
-              ws.send(`Already in room: ${roomId}`);
-            }
-          } else if (type === "LEAVE") {
-            user.rooms = user.rooms.filter((room) => room !== roomId);
-            ws.send(`Left room: ${roomId}`);
-          } else if (type === "CHAT") {
-            const messageData = {
-              roomId,
-              userId,
-              message: parsedData.message,
-            };
-
-            const channel = getChannel();
-            channel.sendToQueue(
-              "chat_queue",
-              Buffer.from(JSON.stringify(messageData)),
-              { persistent: true }
-            );
-            const usersInRoom = Users.filter((user) =>
-              user.rooms.includes(roomId)
-            );
-            usersInRoom.forEach((user) => {
-              user.ws.send(
-                JSON.stringify({ roomId, message: parsedData.message })
-              );
-            });
-          }
-        } catch (err) {
-          ws.send("Error: Invalid message format.");
-          console.error("Error parsing message:", err);
+      if (type === "JOIN") {
+        if (!user.rooms.includes(roomId)) {
+          user.rooms.push(roomId);
+          ws.send(`Joined room: ${roomId}`);
+        } else {
+          ws.send(`Already in room: ${roomId}`);
         }
-      });
+      } else if (type === "LEAVE") {
+        user.rooms = user.rooms.filter((room) => room !== roomId);
+        ws.send(`Left room: ${roomId}`);
+      } else if (type === "CHAT") {
+        const messageData = {
+          roomId,
+          userId,
+          message: parsedData.message,
+        };
 
-      ws.on("close", () => {
-        const index = Users.findIndex((user) => user.userId === userId);
-        if (index !== -1) {
-          Users.splice(index, 1);
-          // console.log(`User ${userId} disconnected`);
-        }
-      });
-    })
-    .catch((err) => {
-      console.error("Error checking user in the database:", err);
-      ws.send("Error: Internal server error.");
-      ws.close();
-    });
+        const channel = getChannel();
+        channel.sendToQueue(
+          "chat_queue",
+          Buffer.from(JSON.stringify(messageData)),
+          { persistent: true }
+        );
+        const usersInRoom = Users.filter((user) => user.rooms.includes(roomId));
+        usersInRoom.forEach((user) => {
+          user.ws.send(JSON.stringify({ roomId, message: parsedData.message }));
+        });
+      }
+    } catch (err) {
+      ws.send("Error: Invalid message format.");
+      console.error("Error parsing message:", err);
+    }
+  });
+
+  ws.on("close", () => {
+    const index = Users.findIndex((user) => user.userId === userId);
+    if (index !== -1) {
+      Users.splice(index, 1);
+      // console.log(`User ${userId} disconnected`);
+    }
+  });
 });
